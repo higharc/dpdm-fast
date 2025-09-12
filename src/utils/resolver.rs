@@ -68,6 +68,14 @@ pub async fn simple_resolver(
                 }
             }
         }
+
+        let request_path = PathBuf::from(request);
+        let root_joined = join_paths(&[&alias.root, &request_path]);
+        if let Some(resolved) =
+            append_suffix(&root_joined.to_string_lossy().into_owned(), &extensions).await?
+        {
+            return Ok(Some(resolved));
+        }
     }
 
     if Path::new(&request).is_absolute() {
