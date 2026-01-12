@@ -93,8 +93,15 @@ pub struct SymbolNode {
 }
 pub type SymbolTree = HashMap<String, Arc<Option<SymbolNode>>>;
 
+/// Path mapping configuration from tsconfig.json
+/// 
+/// The `paths` field is a Vec of (pattern, targets) tuples, sorted by specificity
+/// (longer/more specific patterns first). This ensures correct resolution order
+/// when multiple patterns could match.
 #[derive(Debug, Clone)]
 pub struct Alias {
     pub root: PathBuf,
-    pub paths: HashMap<String, Vec<String>>,
+    /// Path mappings sorted by specificity (longer patterns first)
+    /// Each entry is (pattern, target_paths)
+    pub paths: Vec<(String, Vec<String>)>,
 }
