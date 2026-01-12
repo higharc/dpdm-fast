@@ -269,7 +269,7 @@ async fn main() {
         if is_circular_empty {
             println!("🚀 No circular dependencies found.");
         } else {
-            println!("{}", utils::pretty::pretty_circular(&circulars, "  "));
+            println!("{}", utils::pretty::pretty_circular(&circulars, "  ", &options.context));
         }
     }
 

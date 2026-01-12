@@ -2,8 +2,21 @@ use colored::Colorize;
 
 use crate::{node_resolve::node_builtins::BUILTINS, parser::types::DependencyTree};
 use std::collections::HashMap;
+use std::path::Path;
 
-pub fn pretty_circular(circulars: &[Vec<String>], prefix: &str) -> String {
+/// Shorten a path by removing a context prefix
+fn shorten_path(path: &str, context: &str) -> String {
+    // Try to strip the context prefix, handling Windows extended path prefix
+    let normalized_path = path.strip_prefix(r"\\?\").unwrap_or(path);
+    let normalized_context = context.strip_prefix(r"\\?\").unwrap_or(context);
+    
+    Path::new(normalized_path)
+        .strip_prefix(normalized_context)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string())
+}
+
+pub fn pretty_circular(circulars: &[Vec<String>], prefix: &str, context: &str) -> String {
     let digits = (circulars.len() as f64).log10().ceil() as usize;
     circulars
         .iter()
@@ -15,7 +28,7 @@ pub fn pretty_circular(circulars: &[Vec<String>], prefix: &str) -> String {
                 format!("{:0>width$}", index + 1, width = digits).color("gray"),
                 ") ".color("gray"),
                 line.iter()
-                    .map(|item| item.red().to_string())
+                    .map(|item| shorten_path(item, context).red().to_string())
                     .collect::<Vec<_>>()
                     .join(&" -> ".color("gray").to_string())
             )
