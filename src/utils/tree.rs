@@ -43,7 +43,10 @@ pub fn parse_circular(tree: &mut DependencyTree, skip_dynamic_imports: bool) -> 
         }
     }
 
-    for id in tree.clone().keys() {
+    // Sort keys for deterministic iteration order
+    let mut keys: Vec<String> = tree.keys().cloned().collect();
+    keys.sort();
+    for id in keys {
         visit(
             id.clone(),
             Vec::new(),
@@ -105,9 +108,11 @@ pub fn parse_warnings(tree: &DependencyTree) -> Vec<String> {
     }
 
     if !builtin.is_empty() {
+        let mut builtin_sorted: Vec<_> = builtin.into_iter().collect();
+        builtin_sorted.sort();
         warnings.push(format!(
             "node {}",
-            builtin.into_iter().collect::<Vec<_>>().join(", ")
+            builtin_sorted.join(", ")
         ));
     }
 
