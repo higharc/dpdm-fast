@@ -53,7 +53,15 @@ pub fn parse_circular(tree: &mut DependencyTree, skip_dynamic_imports: bool) -> 
         );
     }
 
+    // Deduplicate cycles by converting to string key
+    let mut seen: HashSet<String> = HashSet::new();
     circulars
+        .into_iter()
+        .filter(|cycle| {
+            let key = cycle.join(" -> ");
+            seen.insert(key) // Returns false if already present
+        })
+        .collect()
 }
 
 fn dependents(tree: &DependencyTree, key: &str) -> Vec<String> {
