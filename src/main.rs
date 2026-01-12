@@ -222,7 +222,7 @@ async fn main() {
                 let _clone_name: String = name.to_string_lossy().into_owned();
 
                 async move {
-                    simple_resolver(&_context, &params_name, &_extensions, None)
+                    simple_resolver(&_context, &params_name, &_extensions, None, None)
                         .await
                         .map(|id| id.unwrap_or(_clone_name))
                         // let it be shorten path

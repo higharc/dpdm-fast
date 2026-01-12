@@ -6,6 +6,7 @@ use crate::node_resolve::lib::resolve_from;
 use crate::parser::types::Alias;
 use crate::utils::alias::match_alias_pattern;
 use crate::utils::path::join_paths;
+use crate::utils::workspace::{resolve_workspace_import, WorkspaceMap};
 
 pub async fn append_suffix(
     request: &str,
@@ -23,11 +24,12 @@ pub async fn append_suffix(
         }
     }
 
-    // 如果 request 是一个目录，则尝试添加 index 后缀，递归调用
+    // If request is a directory, try adding index suffix recursively
     match fs::metadata(request) {
         Ok(metadata) => {
             if metadata.is_dir() {
-                return append_suffix_boxed(&format!("{}/index", request), extensions).await;
+                let index_path = PathBuf::from(request).join("index");
+                return append_suffix_boxed(&index_path.to_string_lossy(), extensions).await;
             }
         }
         Err(_) => {}
@@ -40,7 +42,6 @@ async fn append_suffix_boxed(
     request: &str,
     extensions: &[String],
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
-    // 使用 Box::pin 来处理递归调用
     Box::pin(append_suffix(request, extensions)).await
 }
 
@@ -49,7 +50,9 @@ pub async fn simple_resolver(
     request: &str,
     extensions: &Vec<String>,
     alias: Option<&Alias>,
+    workspace_map: Option<&WorkspaceMap>,
 ) -> Result<Option<String>, Box<dyn std::error::Error>> {
+    // 1. Try tsconfig path aliases first
     if let Some(alias) = alias {
         let root_str = alias.root.to_string_lossy().to_string();
         for (key, paths) in &alias.paths {
@@ -60,6 +63,7 @@ pub async fn simple_resolver(
                         &new_request,
                         extensions,
                         Some(alias),
+                        workspace_map,
                     ))
                     .await?;
                     if result.is_some() {
@@ -72,28 +76,43 @@ pub async fn simple_resolver(
         let request_path = PathBuf::from(request);
         let root_joined = join_paths(&[&alias.root, &request_path]);
         if let Some(resolved) =
-            append_suffix(&root_joined.to_string_lossy().into_owned(), &extensions).await?
+            append_suffix(&root_joined.to_string_lossy().into_owned(), extensions).await?
         {
             return Ok(Some(resolved));
         }
     }
 
+    // 2. Handle absolute paths
     if Path::new(&request).is_absolute() {
-        let result = append_suffix(&request, &extensions).await;
-        return result;
-    }
-    if request.starts_with('.') {
-        let new_path = join_paths(&[&context, &request]);
-        let result = append_suffix(&new_path.to_string_lossy().into_owned(), &extensions).await;
+        let result = append_suffix(request, extensions).await;
         return result;
     }
 
+    // 3. Handle relative paths
+    if request.starts_with('.') {
+        let new_path = join_paths(&[&context, &request]);
+        let result = append_suffix(&new_path.to_string_lossy().into_owned(), extensions).await;
+        return result;
+    }
+
+    // 4. Try workspace packages (monorepo support)
+    if let Some(workspace_map) = workspace_map {
+        if let Some(workspace_path) = resolve_workspace_import(request, workspace_map) {
+            let workspace_path_str = workspace_path.to_string_lossy().into_owned();
+            if let Some(resolved) = append_suffix(&workspace_path_str, extensions).await? {
+                return Ok(Some(resolved));
+            }
+        }
+    }
+
+    // 5. Try node_modules resolution
     let base_dir = PathBuf::from(&context);
     let pkg_path = Path::new(&request)
         .join("package.json")
         .to_string_lossy()
         .into_owned();
-    // 处理 package 的情况
+
+    // Handle package.json main field
     match resolve_from(&pkg_path, base_dir.clone()) {
         Ok(resolved_path) => {
             let pkg_json: serde_json::Value =
@@ -102,7 +121,7 @@ pub async fn simple_resolver(
                 let main_path: PathBuf = Path::new(main.as_str().unwrap()).to_path_buf();
                 let parent_path: PathBuf = resolved_path.parent().unwrap().to_path_buf();
                 let id: PathBuf = join_paths(&[&parent_path, &main_path]);
-                return append_suffix(&id.to_string_lossy().into_owned(), &extensions).await;
+                return append_suffix(&id.to_string_lossy().into_owned(), extensions).await;
             }
         }
         Err(_) => {}

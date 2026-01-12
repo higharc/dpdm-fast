@@ -5,6 +5,7 @@ use crate::utils::json::strip_jsonc_comments;
 use crate::utils::options::normalize_options;
 use crate::utils::path::join_paths;
 use crate::utils::shorten::{shorten_symbol_tree, shorten_tree};
+use crate::utils::workspace::detect_workspaces;
 use glob::glob;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -274,11 +275,14 @@ pub async fn parse_dependency_tree(
     // Extract alias configuration from the merged tsconfig
     let alias = extract_alias_from_tsconfig(&tsconfig_json, root);
 
+    // Detect workspace packages (monorepo support)
+    let workspace_map = detect_workspaces(&tsconfig_dir);
+
     let cm = Lrc::new(SourceMap::default());
     let output: Arc<Mutex<DependencyTree>> = Arc::new(Mutex::new(HashMap::new()));
     let symbol_output: Arc<Mutex<SymbolTree>> = Arc::new(Mutex::new(HashMap::new()));
 
-    // 获取文件列表
+    // Get file list
     let mut tasks = vec![];
     for entry in entries {
         for entry_path in glob(&entry).expect("Failed to read glob pattern") {
@@ -288,6 +292,7 @@ pub async fn parse_dependency_tree(
                     let output_clone = Arc::clone(&output);
                     let symbol_output_clone = Arc::clone(&symbol_output);
                     let alias_arc = alias.as_ref().map(|a| Arc::new(a.clone()));
+                    let workspace_map_arc = workspace_map.as_ref().map(|m| Arc::new(m.clone()));
                     let task = parse_tree_recursive(
                         current_directory.clone(),
                         path,
@@ -296,6 +301,7 @@ pub async fn parse_dependency_tree(
                         Arc::new(cm.clone()),
                         Arc::new(options.clone()),
                         alias_arc,
+                        workspace_map_arc,
                     );
                     tasks.push(task);
                 }

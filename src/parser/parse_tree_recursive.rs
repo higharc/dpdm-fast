@@ -3,6 +3,7 @@ use super::types::{Alias, Dependency, IsModule, ParseOptions};
 use crate::parser::strip_type_only_imports::StripTypeOnlyImports;
 use crate::parser::types::{DependencyTree, ExportSymbol, ImportSymbol, SymbolNode, SymbolTree};
 use crate::utils::resolver::simple_resolver;
+use crate::utils::workspace::WorkspaceMap;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::fs;
@@ -28,15 +29,17 @@ pub async fn parse_tree_recursive(
     path: PathBuf,
     output: Arc<Mutex<DependencyTree>>,
     symbol_output: Arc<Mutex<SymbolTree>>,
-    cm: Arc<Lrc<SourceMap>>,    // 将 Lrc<SourceMap> 包装在 Arc 中
-    options: Arc<ParseOptions>, // 将 ParseOptions 包装在 Arc 中
+    cm: Arc<Lrc<SourceMap>>,
+    options: Arc<ParseOptions>,
     alias: Option<Arc<Alias>>,
+    workspace_map: Option<Arc<WorkspaceMap>>,
 ) -> Option<String> {
     let id: Option<String> = match simple_resolver(
         &context.to_string_lossy().to_string(),
         &path.to_string_lossy().to_string(),
         &options.extensions,
         alias.as_deref(),
+        workspace_map.as_deref(),
     )
     .await
     {
@@ -215,6 +218,7 @@ pub async fn parse_tree_recursive(
         let cm_clone = Arc::clone(&cm);
         let options_clone = Arc::clone(&options);
         let alias_clone = alias.clone();
+        let workspace_map_clone = workspace_map.clone();
         let dep_future = async move {
             Box::pin(parse_tree_recursive(
                 new_context,
@@ -224,6 +228,7 @@ pub async fn parse_tree_recursive(
                 cm_clone,
                 options_clone,
                 alias_clone,
+                workspace_map_clone,
             ))
         };
         deps.push(dep_future);
