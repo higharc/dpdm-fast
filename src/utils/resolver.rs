@@ -8,6 +8,28 @@ use crate::utils::alias::match_alias_pattern;
 use crate::utils::path::join_paths;
 use crate::utils::workspace::{resolve_workspace_import, WorkspaceMap};
 
+fn normalize_path_string(path: PathBuf) -> String {
+    let mut normalized = path.to_string_lossy().into_owned();
+
+    if cfg!(windows) {
+        if let Some(stripped) = normalized.strip_prefix(r"\\?\") {
+            normalized = stripped.to_string();
+        }
+        normalized = normalized.replace('\\', "/");
+    }
+
+    normalized
+}
+
+fn finalize_resolved_path(path: &str) -> String {
+    let canonical = fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
+    normalize_path_string(canonical)
+}
+
+fn finalize_optional_path(path: Option<String>) -> Option<String> {
+    path.map(|p| finalize_resolved_path(&p))
+}
+
 pub async fn append_suffix(
     request: &str,
     extensions: &[String],
@@ -78,21 +100,21 @@ pub async fn simple_resolver(
         if let Some(resolved) =
             append_suffix(&root_joined.to_string_lossy().into_owned(), extensions).await?
         {
-            return Ok(Some(resolved));
+            return Ok(Some(finalize_resolved_path(&resolved)));
         }
     }
 
     // 2. Handle absolute paths
     if Path::new(&request).is_absolute() {
-        let result = append_suffix(request, extensions).await;
-        return result;
+        let result = append_suffix(request, extensions).await?;
+        return Ok(finalize_optional_path(result));
     }
 
     // 3. Handle relative paths
     if request.starts_with('.') {
         let new_path = join_paths(&[&context, &request]);
-        let result = append_suffix(&new_path.to_string_lossy().into_owned(), extensions).await;
-        return result;
+        let result = append_suffix(&new_path.to_string_lossy().into_owned(), extensions).await?;
+        return Ok(finalize_optional_path(result));
     }
 
     // 4. Try workspace packages (monorepo support)
@@ -100,7 +122,7 @@ pub async fn simple_resolver(
         if let Some(workspace_path) = resolve_workspace_import(request, workspace_map) {
             let workspace_path_str = workspace_path.to_string_lossy().into_owned();
             if let Some(resolved) = append_suffix(&workspace_path_str, extensions).await? {
-                return Ok(Some(resolved));
+                return Ok(Some(finalize_resolved_path(&resolved)));
             }
         }
     }
@@ -121,7 +143,8 @@ pub async fn simple_resolver(
                 let main_path: PathBuf = Path::new(main.as_str().unwrap()).to_path_buf();
                 let parent_path: PathBuf = resolved_path.parent().unwrap().to_path_buf();
                 let id: PathBuf = join_paths(&[&parent_path, &main_path]);
-                return append_suffix(&id.to_string_lossy().into_owned(), extensions).await;
+                let resolved = append_suffix(&id.to_string_lossy().into_owned(), extensions).await?;
+                return Ok(finalize_optional_path(resolved));
             }
         }
         Err(_) => {}
@@ -129,7 +152,7 @@ pub async fn simple_resolver(
 
     match resolve_from(&request, base_dir) {
         Ok(resolved_path) => {
-            let result = resolved_path.to_string_lossy().into_owned();
+            let result = finalize_resolved_path(&resolved_path.to_string_lossy().into_owned());
             return Ok(Some(result));
         }
         Err(_) => {}

@@ -209,34 +209,34 @@ pub async fn parse_tree_recursive(
         symbol_tree_lock.insert(collector.id.clone(), Arc::new(Some(symbol_node)));
     }
 
-    let mut deps: Vec<_> = Vec::new();
-    for dep in &collector.dependencies {
-        let path: PathBuf = PathBuf::from(dep.request.clone());
-        let new_context: PathBuf = new_context.clone();
-        let output_clone = Arc::clone(&output);
-        let symbol_output_clone = Arc::clone(&symbol_output);
-        let cm_clone = Arc::clone(&cm);
-        let options_clone = Arc::clone(&options);
-        let alias_clone = alias.clone();
-        let workspace_map_clone = workspace_map.clone();
-        let dep_future = async move {
-            Box::pin(parse_tree_recursive(
-                new_context,
-                path,
-                output_clone,
-                symbol_output_clone,
-                cm_clone,
-                options_clone,
-                alias_clone,
-                workspace_map_clone,
-            ))
-        };
-        deps.push(dep_future);
+    fn kind_rank(kind: &crate::parser::consts::DependencyKind) -> u8 {
+        match kind {
+            crate::parser::consts::DependencyKind::CommonJS => 0,
+            crate::parser::consts::DependencyKind::StaticImport => 1,
+            crate::parser::consts::DependencyKind::DynamicImport => 2,
+            crate::parser::consts::DependencyKind::StaticExport => 3,
+        }
     }
 
-    let results = futures::future::join_all(deps).await;
-    for (i, dep) in results.into_iter().enumerate() {
-        collector.dependencies[i].id = dep.await;
+    collector.dependencies.sort_by(|a, b| {
+        a.request
+            .cmp(&b.request)
+            .then_with(|| kind_rank(&a.kind).cmp(&kind_rank(&b.kind)))
+    });
+
+    for dep in collector.dependencies.iter_mut() {
+        let path = PathBuf::from(dep.request.clone());
+        dep.id = Box::pin(parse_tree_recursive(
+            new_context.clone(),
+            path,
+            Arc::clone(&output),
+            Arc::clone(&symbol_output),
+            Arc::clone(&cm),
+            Arc::clone(&options),
+            alias.clone(),
+            workspace_map.clone(),
+        ))
+        .await;
     }
 
     collector.dependencies.retain(|dep| {
@@ -245,6 +245,13 @@ pub async fn parse_tree_recursive(
         } else {
             true
         }
+    });
+
+    collector.dependencies.sort_by(|a, b| {
+        a.id
+            .cmp(&b.id)
+            .then_with(|| a.request.cmp(&b.request))
+            .then_with(|| kind_rank(&a.kind).cmp(&kind_rank(&b.kind)))
     });
 
     // 将收集到的依赖存储到输出和缓存中

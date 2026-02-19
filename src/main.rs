@@ -217,40 +217,35 @@ async fn main() {
 
     let output = args.output.clone();
     if output.is_some() || !args.no_tree {
-        let entries_deep = futures::future::join_all(files.iter().map(|g: &String| {
-            let _g = g.clone();
-            async move {
-                glob(&_g)
-                    .expect("Failed to read glob pattern")
-                    .filter_map(Result::ok)
-                    .collect::<Vec<_>>()
+        let mut entry_paths: Vec<PathBuf> = Vec::new();
+        for pattern in &files {
+            for path in glob(pattern)
+                .expect("Failed to read glob pattern")
+                .filter_map(Result::ok)
+            {
+                entry_paths.push(path);
             }
-        }))
-        .await;
-        let entries: Vec<_> =
-            futures::future::join_all(entries_deep.into_iter().flatten().map(|name| {
-                let path_context: PathBuf = PathBuf::from(options.context.clone());
-                let _context: String = options.context.clone();
-                let _extensions: Vec<String> = options.extensions.clone();
+        }
+        entry_paths.sort();
+        entry_paths.dedup();
 
-                let params_name: String = join_paths(&[&path_context, &name])
-                    .to_string_lossy()
-                    .into_owned();
+        let path_context: PathBuf = PathBuf::from(options.context.clone());
+        let mut entries: Vec<String> = Vec::new();
+        for name in entry_paths {
+            let params_name: String = join_paths(&[&path_context, &name])
+                .to_string_lossy()
+                .into_owned();
 
-                let _clone_name: String = name.to_string_lossy().into_owned();
-
-                async move {
-                    simple_resolver(&_context, &params_name, &_extensions, None, None)
-                        .await
-                        .map(|id| id.unwrap_or(_clone_name))
-                        // let it be shorten path
-                        .map(|id| utils::shorten::shorten_path(&id, &_context))
-                        .unwrap_or_else(|e| format!("Error: {}", e))
-                }
-            }))
-            .await
-            .into_iter()
-            .collect();
+            let fallback_name: String = name.to_string_lossy().into_owned();
+            let entry = simple_resolver(&options.context, &params_name, &options.extensions, None, None)
+                .await
+                .map(|id| id.unwrap_or(fallback_name))
+                .map(|id| utils::shorten::shorten_path(&id, &options.context))
+                .unwrap_or_else(|e| format!("Error: {}", e));
+            entries.push(entry);
+        }
+        entries.sort();
+        entries.dedup();
 
         if output.is_some() {
             let file = File::create(args.output.clone().unwrap()).expect("Failed to create file");

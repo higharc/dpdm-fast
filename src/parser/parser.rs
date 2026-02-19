@@ -116,35 +116,37 @@ pub async fn parse_dependency_tree(
     let output: Arc<Mutex<DependencyTree>> = Arc::new(Mutex::new(HashMap::new()));
     let symbol_output: Arc<Mutex<SymbolTree>> = Arc::new(Mutex::new(HashMap::new()));
 
-    // Get file list
-    let mut tasks = vec![];
+    // Build a deterministic entry list
+    let mut entry_files: Vec<PathBuf> = Vec::new();
     for entry in entries {
         for entry_path in glob(&entry).expect("Failed to read glob pattern") {
             match entry_path {
                 Ok(filename) => {
-                    let path: PathBuf = current_directory.join(filename);
-                    let output_clone = Arc::clone(&output);
-                    let symbol_output_clone = Arc::clone(&symbol_output);
-                    let alias_arc = alias.as_ref().map(|a| Arc::new(a.clone()));
-                    let workspace_map_arc = workspace_map.as_ref().map(|m| Arc::new(m.clone()));
-                    let task = parse_tree_recursive(
-                        current_directory.clone(),
-                        path,
-                        output_clone,
-                        symbol_output_clone,
-                        Arc::new(cm.clone()),
-                        Arc::new(options.clone()),
-                        alias_arc,
-                        workspace_map_arc,
-                    );
-                    tasks.push(task);
+                    let path = current_directory.join(filename);
+                    let canonical = fs::canonicalize(&path).unwrap_or(path);
+                    entry_files.push(canonical);
                 }
                 Err(e) => eprintln!("{:?}", e),
             }
         }
     }
 
-    futures::future::join_all(tasks).await;
+    entry_files.sort();
+    entry_files.dedup();
+
+    for path in entry_files {
+        parse_tree_recursive(
+            current_directory.clone(),
+            path,
+            Arc::clone(&output),
+            Arc::clone(&symbol_output),
+            Arc::new(cm.clone()),
+            Arc::new(options.clone()),
+            alias.as_ref().map(|a| Arc::new(a.clone())),
+            workspace_map.as_ref().map(|m| Arc::new(m.clone())),
+        )
+        .await;
+    }
 
     let output_lock = output.lock().unwrap();
     let symbol_lock = symbol_output.lock().unwrap();
