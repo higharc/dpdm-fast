@@ -211,7 +211,8 @@ pub fn get_files_from_tsconfig(
 
     let mut all_files: Vec<PathBuf> = Vec::new();
 
-    // Get explicit files array (NOT inherited, only if specified)
+    // Get explicit files array from merged config
+    let has_files_field = config.get("files").is_some();
     if let Some(files_array) = config.get("files").and_then(|f| f.as_array()) {
         for file_val in files_array {
             if let Some(file_str) = file_val.as_str() {
@@ -223,7 +224,9 @@ pub fn get_files_from_tsconfig(
         }
     }
 
-    // Get include patterns (from merged config or defaults)
+    // Get include patterns from merged config.
+    // TS behavior: if both `files` and `include` are absent, default include is ["**/*"].
+    // If `files` is present and `include` is absent, do not apply the default include.
     let include: Vec<String> = config
         .get("include")
         .and_then(|v| v.as_array())
@@ -232,7 +235,13 @@ pub fn get_files_from_tsconfig(
                 .filter_map(|v| v.as_str().map(String::from))
                 .collect()
         })
-        .unwrap_or_else(|| DEFAULT_INCLUDE.iter().map(|s| s.to_string()).collect());
+        .unwrap_or_else(|| {
+            if has_files_field {
+                Vec::new()
+            } else {
+                DEFAULT_INCLUDE.iter().map(|s| s.to_string()).collect()
+            }
+        });
 
     // Get exclude patterns (from merged config or defaults)
     let mut exclude: Vec<String> = config
@@ -499,12 +508,12 @@ mod tests {
             "tsconfig.json",
             r#"{
                 "files": ["src/main.ts"],
-                "include": ["src/**/*"],
                 "references": [{"path": "./packages/pkg-a"}]
             }"#,
         );
 
         create_test_file(root, "src/main.ts", "export const root = 1;");
+        create_test_file(root, "src/other.ts", "export const other = 1;");
         create_test_file(
             root,
             "packages/pkg-a/tsconfig.json",
@@ -519,6 +528,7 @@ mod tests {
 
         assert_eq!(files.len(), 1);
         assert!(files.iter().any(|f| f.ends_with("src/main.ts")));
+        assert!(files.iter().all(|f| !f.ends_with("src/other.ts")));
     }
 
     #[test]

@@ -265,7 +265,12 @@ async fn main() {
     let include_regex = if args.include == ".*" {
         if let Some(prefix) = tsconfig_scope_prefix {
             let escaped = regex::escape(&(prefix.trim_end_matches('/').to_string() + "/"));
-            Regex::new(&format!(r"^{}", escaped)).unwrap_or_else(|_| Regex::new(".*").unwrap())
+            let pattern = if cfg!(windows) {
+                format!(r"(?i)^{}", escaped)
+            } else {
+                format!(r"^{}", escaped)
+            };
+            Regex::new(&pattern).unwrap_or_else(|_| Regex::new(".*").unwrap())
         } else {
             Regex::new(&args.include).unwrap_or_else(|_| Regex::new(".*").unwrap())
         }
