@@ -35,6 +35,26 @@ pub enum Error {
     UnconfiguredBasedir,
 }
 
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Error::JSONError(err) => write!(f, "failed to parse package.json: {}", err),
+            Error::IOError(err) => write!(f, "I/O error: {}", err),
+            Error::UnconfiguredBasedir => write!(f, "resolver basedir is not configured"),
+        }
+    }
+}
+
+impl StdError for Error {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        match self {
+            Error::JSONError(err) => Some(err),
+            Error::IOError(err) => Some(err),
+            Error::UnconfiguredBasedir => None,
+        }
+    }
+}
+
 impl From<serde_json::Error> for Error {
     fn from(err: serde_json::Error) -> Error {
         Error::JSONError(err)
@@ -157,6 +177,7 @@ impl Resolver {
     ///         .resolve("./module")
     /// );
     /// ```
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn extensions<T>(self, extensions: T) -> Self
     where
         T: IntoIterator,
@@ -189,6 +210,7 @@ impl Resolver {
     ///         .resolve("./module-main")
     /// );
     /// ```
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn main_fields<T>(self, main_fields: T) -> Self
     where
         T: IntoIterator,
@@ -228,6 +250,7 @@ impl Resolver {
     ///            .resolve("dep")
     /// };
     /// ```
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn preserve_symlinks(self, preserve_symlinks: bool) -> Self {
         Resolver {
             preserve_symlinks,
@@ -480,6 +503,7 @@ fn normalize_path(p: &Path) -> PathBuf {
     normalized
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 fn normalize_extensions<T>(extensions: T) -> Vec<String>
 where
     T: IntoIterator,
@@ -512,6 +536,7 @@ pub fn is_core_module(target: &str) -> bool {
 ///     Err(err) => panic!("Failed: {:?}", err),
 /// }
 /// ```
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn resolve(target: &str) -> Result<PathBuf, Error> {
     let key = target.to_string();
     if let Some(cached) = CACHE.get(&key) {

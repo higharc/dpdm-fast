@@ -18,6 +18,7 @@ where
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub enum IsModule {
+    #[allow(dead_code)]
     Bool(bool),
     Unknown,
 }
@@ -94,7 +95,7 @@ pub struct SymbolNode {
 pub type SymbolTree = HashMap<String, Arc<Option<SymbolNode>>>;
 
 /// Path mapping configuration from tsconfig.json
-/// 
+///
 /// The `paths` field is a Vec of (pattern, targets) tuples, sorted by specificity
 /// (longer/more specific patterns first). This ensures correct resolution order
 /// when multiple patterns could match.
