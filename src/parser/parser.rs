@@ -14,6 +14,19 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use swc_core::common::{sync::Lrc, SourceMap};
 
+fn has_glob_pattern(value: &str) -> bool {
+    if cfg!(windows) && value.starts_with(r"\\?\") {
+        return false;
+    }
+
+    value.contains('*')
+        || value.contains('?')
+        || value.contains('[')
+        || value.contains(']')
+        || value.contains('{')
+        || value.contains('}')
+}
+
 /// Calculate the specificity of a path pattern for sorting.
 /// More specific patterns (longer, fewer wildcards) should be tried first.
 fn pattern_specificity(pattern: &str) -> (usize, usize) {
@@ -119,15 +132,27 @@ pub async fn parse_dependency_tree(
     // Build a deterministic entry list
     let mut entry_files: Vec<PathBuf> = Vec::new();
     for entry in entries {
-        for entry_path in glob(&entry).expect("Failed to read glob pattern") {
-            match entry_path {
-                Ok(filename) => {
-                    let path = current_directory.join(filename);
-                    let canonical = fs::canonicalize(&path).unwrap_or(path);
-                    entry_files.push(canonical);
+        if has_glob_pattern(entry) {
+            for entry_path in glob(entry).expect("Failed to read glob pattern") {
+                match entry_path {
+                    Ok(filename) => {
+                        let path = current_directory.join(filename);
+                        let canonical = fs::canonicalize(&path).unwrap_or(path);
+                        entry_files.push(canonical);
+                    }
+                    Err(e) => eprintln!("{:?}", e),
                 }
-                Err(e) => eprintln!("{:?}", e),
             }
+        } else {
+            let path = PathBuf::from(entry);
+            let absolute = if path.is_absolute() {
+                path
+            } else {
+                current_directory.join(path)
+            };
+
+            let canonical = fs::canonicalize(&absolute).unwrap_or(absolute);
+            entry_files.push(canonical);
         }
     }
 

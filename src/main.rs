@@ -21,6 +21,30 @@ use utils::tsconfig_files::get_files_from_tsconfig;
 
 use parser::types::{IsModule, ParseOptions, Progress};
 
+fn has_glob_pattern(value: &str) -> bool {
+    if cfg!(windows) && value.starts_with(r"\\?\") {
+        return false;
+    }
+
+    value.contains('*')
+        || value.contains('?')
+        || value.contains('[')
+        || value.contains(']')
+        || value.contains('{')
+        || value.contains('}')
+}
+
+fn normalize_path_for_match(path: &PathBuf) -> String {
+    let mut normalized = path.to_string_lossy().into_owned();
+    if cfg!(windows) {
+        if let Some(stripped) = normalized.strip_prefix(r"\\?\") {
+            normalized = stripped.to_string();
+        }
+        normalized = normalized.replace('\\', "/");
+    }
+    normalized
+}
+
 #[derive(Parser, Debug)]
 #[clap(
     version = "1.0",
@@ -94,6 +118,10 @@ struct Args {
     #[arg(long, short='d')]
     skip_dynamic_imports: Option<String>,
 
+    /// In tsconfig mode, include project references and allow traversal outside the tsconfig root
+    #[arg(long, default_value = "false")]
+    project_references: bool,
+
     /// Write deterministic debug dumps to <prefix>.* files
     #[arg(long)]
     debug_dump_prefix: Option<String>,
@@ -148,11 +176,21 @@ async fn main() {
     let args = Args::parse();
 
     // Derive files from tsconfig if not provided explicitly
+    let mut tsconfig_scope_prefix: Option<String> = None;
     let files: Vec<String> = if args.files.is_empty() {
         if let Some(ref tsconfig) = args.tsconfig {
             let tsconfig_path = PathBuf::from(tsconfig);
             let mut visited = HashSet::new();
-            let discovered_files = get_files_from_tsconfig(&tsconfig_path, &mut visited);
+            let discovered_files =
+                get_files_from_tsconfig(&tsconfig_path, &mut visited, args.project_references);
+
+            if !args.project_references {
+                if let Ok(canonical_tsconfig) = std::fs::canonicalize(&tsconfig_path) {
+                    if let Some(parent) = canonical_tsconfig.parent() {
+                        tsconfig_scope_prefix = Some(normalize_path_for_match(&parent.to_path_buf()));
+                    }
+                }
+            }
             
             if discovered_files.is_empty() {
                 eprintln!("\nNo files found in tsconfig: {}", tsconfig);
@@ -224,6 +262,17 @@ async fn main() {
         .map(|s| format!(".{}", s))
         .collect();
     extensions.insert(0, String::from(""));
+    let include_regex = if args.include == ".*" {
+        if let Some(prefix) = tsconfig_scope_prefix {
+            let escaped = regex::escape(&(prefix.trim_end_matches('/').to_string() + "/"));
+            Regex::new(&format!(r"^{}", escaped)).unwrap_or_else(|_| Regex::new(".*").unwrap())
+        } else {
+            Regex::new(&args.include).unwrap_or_else(|_| Regex::new(".*").unwrap())
+        }
+    } else {
+        Regex::new(&args.include).unwrap_or_else(|_| Regex::new(".*").unwrap())
+    };
+
     let options = ParseOptions {
         context,
         extensions,
@@ -233,7 +282,7 @@ async fn main() {
             .map(String::from)
             .map(|s| format!(".{}", s))
             .collect(),
-        include: Regex::new(&args.include).unwrap_or_else(|_| Regex::new(".*").unwrap()),
+        include: include_regex,
         exclude: Regex::new(&args.exclude).unwrap_or_else(|_| Regex::new("$").unwrap()),
         tsconfig: args.tsconfig.clone(),
         transform: args.transform,
@@ -279,10 +328,15 @@ async fn main() {
     if output.is_some() || !args.no_tree {
         let mut entry_paths: Vec<PathBuf> = Vec::new();
         for pattern in &files {
-            for path in glob(pattern)
-                .expect("Failed to read glob pattern")
-                .filter_map(Result::ok)
-            {
+            if has_glob_pattern(pattern) {
+                for path in glob(pattern)
+                    .expect("Failed to read glob pattern")
+                    .filter_map(Result::ok)
+                {
+                    entry_paths.push(path);
+                }
+            } else {
+                let path = PathBuf::from(pattern);
                 entry_paths.push(path);
             }
         }

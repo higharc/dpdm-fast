@@ -173,12 +173,20 @@ fn merge_compiler_options(parent: Value, child: Value) -> Value {
 pub fn get_files_from_tsconfig(
     tsconfig_path: &Path,
     visited: &mut HashSet<PathBuf>,
+    include_references: bool,
 ) -> Vec<PathBuf> {
+    fn normalize_file_path(path: PathBuf) -> PathBuf {
+        fs::canonicalize(&path).unwrap_or(path)
+    }
+
     // Prevent circular references
     let canonical = match fs::canonicalize(tsconfig_path) {
         Ok(p) => p,
         Err(_) => {
-            eprintln!("Failed to canonicalize tsconfig path: {}", tsconfig_path.display());
+            eprintln!(
+                "Failed to canonicalize tsconfig path: {}",
+                tsconfig_path.display()
+            );
             return vec![];
         }
     };
@@ -209,7 +217,7 @@ pub fn get_files_from_tsconfig(
             if let Some(file_str) = file_val.as_str() {
                 let file_path = config_dir.join(file_str);
                 if file_path.exists() {
-                    all_files.push(file_path);
+                    all_files.push(normalize_file_path(file_path));
                 }
             }
         }
@@ -243,7 +251,16 @@ pub fn get_files_from_tsconfig(
         .and_then(|co| co.get("outDir"))
         .and_then(|od| od.as_str())
     {
-        exclude.push(out_dir.to_string());
+        let out_dir_path = PathBuf::from(out_dir);
+        if out_dir_path.is_absolute() {
+            if let Ok(relative_out_dir) = out_dir_path.strip_prefix(&config_dir) {
+                exclude.push(relative_out_dir.to_string_lossy().to_string());
+            } else {
+                exclude.push(out_dir.to_string());
+            }
+        } else {
+            exclude.push(out_dir.to_string());
+        }
     }
 
     // Expand include globs and filter by exclude
@@ -251,16 +268,21 @@ pub fn get_files_from_tsconfig(
     all_files.extend(included_files);
 
     // Recursively process references
-    if let Some(refs) = config.get("references").and_then(|r| r.as_array()) {
-        for ref_obj in refs {
-            if let Some(ref_path) = ref_obj.get("path").and_then(|p| p.as_str()) {
-                let resolved_ref = resolve_reference_path(ref_path, &config_dir);
-                let ref_files = get_files_from_tsconfig(&resolved_ref, visited);
-                all_files.extend(ref_files);
+    if include_references {
+        if let Some(refs) = config.get("references").and_then(|r| r.as_array()) {
+            for ref_obj in refs {
+                if let Some(ref_path) = ref_obj.get("path").and_then(|p| p.as_str()) {
+                    let resolved_ref = resolve_reference_path(ref_path, &config_dir);
+                    let ref_files =
+                        get_files_from_tsconfig(&resolved_ref, visited, include_references);
+                    all_files.extend(ref_files);
+                }
             }
         }
     }
 
+    all_files.sort();
+    all_files.dedup();
     all_files
 }
 
@@ -289,6 +311,10 @@ fn resolve_reference_path(ref_path: &str, config_dir: &PathBuf) -> PathBuf {
 fn expand_and_filter(include: &[String], exclude: &[String], config_dir: &PathBuf) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = Vec::new();
 
+    fn normalize_file_path(path: PathBuf) -> PathBuf {
+        fs::canonicalize(&path).unwrap_or(path)
+    }
+
     // Normalize config_dir for glob pattern construction
     let config_dir_str = config_dir.to_string_lossy().to_string();
     // Remove UNC prefix on Windows for glob compatibility
@@ -296,7 +322,8 @@ fn expand_and_filter(include: &[String], exclude: &[String], config_dir: &PathBu
         config_dir_str.trim_start_matches("\\\\?\\").to_string()
     } else {
         config_dir_str
-    };
+    }
+    .replace('\\', "/");
 
     for pattern in include {
         let full_pattern = format!("{}/{}", config_dir_normalized, pattern);
@@ -316,7 +343,7 @@ fn expand_and_filter(include: &[String], exclude: &[String], config_dir: &PathBu
 
                     // Check if file matches any exclude pattern
                     if !is_excluded(&entry, exclude, config_dir) {
-                        files.push(entry);
+                        files.push(normalize_file_path(entry));
                     }
                 }
             }
@@ -326,11 +353,22 @@ fn expand_and_filter(include: &[String], exclude: &[String], config_dir: &PathBu
         }
     }
 
+    files.sort();
+    files.dedup();
     files
 }
 
 /// Check if a file path matches any exclude pattern
 fn is_excluded(file_path: &Path, exclude: &[String], config_dir: &PathBuf) -> bool {
+    fn normalize_pattern(pattern: &str) -> String {
+        pattern
+            .replace('\\', "/")
+            .trim_start_matches("./")
+            .trim_start_matches('/')
+            .trim_end_matches('/')
+            .to_string()
+    }
+
     // Get relative path from config_dir
     let relative_path = file_path
         .strip_prefix(config_dir)
@@ -347,14 +385,15 @@ fn is_excluded(file_path: &Path, exclude: &[String], config_dir: &PathBuf) -> bo
         // - Otherwise, check if path starts with or contains the pattern
         if pattern.contains('*') {
             // Use glob matching
-            if let Ok(glob_pattern) = glob::Pattern::new(pattern) {
+            let normalized_pattern = normalize_pattern(pattern);
+            if let Ok(glob_pattern) = glob::Pattern::new(&normalized_pattern) {
                 if glob_pattern.matches(&normalized_path) {
                     return true;
                 }
             }
         } else {
             // Simple containment check
-            let normalized_pattern = pattern.replace('\\', "/");
+            let normalized_pattern = normalize_pattern(pattern);
             if normalized_path.starts_with(&normalized_pattern)
                 || normalized_path.contains(&format!("/{}/", normalized_pattern))
                 || normalized_path.starts_with(&format!("{}/", normalized_pattern))
@@ -404,7 +443,7 @@ mod tests {
         create_test_file(root, "node_modules/pkg/index.ts", "// excluded");
 
         let mut visited = HashSet::new();
-        let files = get_files_from_tsconfig(&root.join("tsconfig.json"), &mut visited);
+        let files = get_files_from_tsconfig(&root.join("tsconfig.json"), &mut visited, true);
 
         assert_eq!(files.len(), 2);
         assert!(files.iter().any(|f| f.ends_with("index.ts")));
@@ -443,11 +482,69 @@ mod tests {
         create_test_file(root, "src/index.test.ts", "// test file");
 
         let mut visited = HashSet::new();
-        let files = get_files_from_tsconfig(&root.join("tsconfig.json"), &mut visited);
+        let files = get_files_from_tsconfig(&root.join("tsconfig.json"), &mut visited, true);
 
         // Should include index.ts but exclude index.test.ts
         assert_eq!(files.len(), 1);
         assert!(files.iter().any(|f| f.ends_with("index.ts")));
+    }
+
+    #[test]
+    fn test_get_files_without_project_references() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        create_test_file(
+            root,
+            "tsconfig.json",
+            r#"{
+                "files": ["src/main.ts"],
+                "include": ["src/**/*"],
+                "references": [{"path": "./packages/pkg-a"}]
+            }"#,
+        );
+
+        create_test_file(root, "src/main.ts", "export const root = 1;");
+        create_test_file(
+            root,
+            "packages/pkg-a/tsconfig.json",
+            r#"{
+                "files": ["src/a.ts"]
+            }"#,
+        );
+        create_test_file(root, "packages/pkg-a/src/a.ts", "export const a = 1;");
+
+        let mut visited = HashSet::new();
+        let files = get_files_from_tsconfig(&root.join("tsconfig.json"), &mut visited, false);
+
+        assert_eq!(files.len(), 1);
+        assert!(files.iter().any(|f| f.ends_with("src/main.ts")));
+    }
+
+    #[test]
+    fn test_out_dir_excluded_with_dot_prefix() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        create_test_file(
+            root,
+            "tsconfig.json",
+            r#"{
+                "compilerOptions": {
+                    "outDir": "./lib/out"
+                },
+                "include": ["lib/**/*"]
+            }"#,
+        );
+
+        create_test_file(root, "lib/out/a.d.ts", "export type A = string;");
+        create_test_file(root, "lib/src/keep.ts", "export const keep = 1;");
+
+        let mut visited = HashSet::new();
+        let files = get_files_from_tsconfig(&root.join("tsconfig.json"), &mut visited, true);
+
+        assert!(files.iter().all(|f| !f.ends_with("lib/out/a.d.ts")));
+        assert!(files.iter().any(|f| f.ends_with("lib/src/keep.ts")));
     }
 
     #[test]
