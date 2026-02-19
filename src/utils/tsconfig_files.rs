@@ -16,6 +16,25 @@ const DEFAULT_EXCLUDE: &[&str] = &["node_modules", "bower_components", "jspm_pac
 /// TypeScript file extensions to match
 const TS_EXTENSIONS: &[&str] = &[".ts", ".tsx", ".mts", ".cts"];
 
+fn normalize_slashes(value: &str) -> String {
+    value.replace('\\', "/")
+}
+
+fn replace_config_dir_var(value: &str, config_dir: &Path) -> String {
+    let config_dir_value = normalize_slashes(&config_dir.to_string_lossy());
+    value.replace("${configDir}", &config_dir_value)
+}
+
+fn resolve_config_path(value: &str, config_dir: &Path) -> PathBuf {
+    let replaced = replace_config_dir_var(value, config_dir);
+    let path = PathBuf::from(&replaced);
+    if path.is_absolute() {
+        path
+    } else {
+        config_dir.join(path)
+    }
+}
+
 /// Result of loading a tsconfig
 pub struct TsConfigResult {
     pub config: Value,
@@ -216,7 +235,7 @@ pub fn get_files_from_tsconfig(
     if let Some(files_array) = config.get("files").and_then(|f| f.as_array()) {
         for file_val in files_array {
             if let Some(file_str) = file_val.as_str() {
-                let file_path = config_dir.join(file_str);
+                let file_path = resolve_config_path(file_str, &config_dir);
                 if file_path.exists() {
                     all_files.push(normalize_file_path(file_path));
                 }
@@ -232,7 +251,7 @@ pub fn get_files_from_tsconfig(
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
+                .filter_map(|v| v.as_str().map(|s| replace_config_dir_var(s, &config_dir)))
                 .collect()
         })
         .unwrap_or_else(|| {
@@ -249,7 +268,7 @@ pub fn get_files_from_tsconfig(
         .and_then(|v| v.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
+                .filter_map(|v| v.as_str().map(|s| replace_config_dir_var(s, &config_dir)))
                 .collect()
         })
         .unwrap_or_else(|| DEFAULT_EXCLUDE.iter().map(|s| s.to_string()).collect());
@@ -260,7 +279,7 @@ pub fn get_files_from_tsconfig(
         .and_then(|co| co.get("outDir"))
         .and_then(|od| od.as_str())
     {
-        let out_dir_path = PathBuf::from(out_dir);
+        let out_dir_path = resolve_config_path(out_dir, &config_dir);
         if out_dir_path.is_absolute() {
             if let Ok(relative_out_dir) = out_dir_path.strip_prefix(&config_dir) {
                 exclude.push(relative_out_dir.to_string_lossy().to_string());
@@ -335,7 +354,18 @@ fn expand_and_filter(include: &[String], exclude: &[String], config_dir: &PathBu
     .replace('\\', "/");
 
     for pattern in include {
-        let full_pattern = format!("{}/{}", config_dir_normalized, pattern);
+        let pattern_normalized = normalize_slashes(pattern);
+        let full_pattern = if Path::new(&pattern_normalized).is_absolute()
+            || pattern_normalized.starts_with(&config_dir_normalized)
+        {
+            pattern_normalized
+        } else {
+            format!(
+                "{}/{}",
+                config_dir_normalized,
+                pattern_normalized.trim_start_matches('/')
+            )
+        };
 
         match glob(&full_pattern) {
             Ok(paths) => {
@@ -369,9 +399,11 @@ fn expand_and_filter(include: &[String], exclude: &[String], config_dir: &PathBu
 
 /// Check if a file path matches any exclude pattern
 fn is_excluded(file_path: &Path, exclude: &[String], config_dir: &PathBuf) -> bool {
-    fn normalize_pattern(pattern: &str) -> String {
+    fn normalize_pattern(pattern: &str, config_dir: &PathBuf) -> String {
+        let config_dir_normalized = normalize_slashes(&config_dir.to_string_lossy());
         pattern
             .replace('\\', "/")
+            .trim_start_matches(&(config_dir_normalized + "/"))
             .trim_start_matches("./")
             .trim_start_matches('/')
             .trim_end_matches('/')
@@ -394,7 +426,7 @@ fn is_excluded(file_path: &Path, exclude: &[String], config_dir: &PathBuf) -> bo
         // - Otherwise, check if path starts with or contains the pattern
         if pattern.contains('*') {
             // Use glob matching
-            let normalized_pattern = normalize_pattern(pattern);
+            let normalized_pattern = normalize_pattern(pattern, config_dir);
             if let Ok(glob_pattern) = glob::Pattern::new(&normalized_pattern) {
                 if glob_pattern.matches(&normalized_path) {
                     return true;
@@ -402,7 +434,7 @@ fn is_excluded(file_path: &Path, exclude: &[String], config_dir: &PathBuf) -> bo
             }
         } else {
             // Simple containment check
-            let normalized_pattern = normalize_pattern(pattern);
+            let normalized_pattern = normalize_pattern(pattern, config_dir);
             if normalized_path.starts_with(&normalized_pattern)
                 || normalized_path.contains(&format!("/{}/", normalized_pattern))
                 || normalized_path.starts_with(&format!("{}/", normalized_pattern))
@@ -555,6 +587,30 @@ mod tests {
 
         assert!(files.iter().all(|f| !f.ends_with("lib/out/a.d.ts")));
         assert!(files.iter().any(|f| f.ends_with("lib/src/keep.ts")));
+    }
+
+    #[test]
+    fn test_config_dir_variable_in_include_and_exclude() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path();
+
+        create_test_file(
+            root,
+            "tsconfig.json",
+            r#"{
+                "include": ["${configDir}/src/**/*"],
+                "exclude": ["${configDir}/src/out", "node_modules"]
+            }"#,
+        );
+
+        create_test_file(root, "src/keep.ts", "export const keep = 1;");
+        create_test_file(root, "src/out/generated.ts", "export const generated = 1;");
+
+        let mut visited = HashSet::new();
+        let files = get_files_from_tsconfig(&root.join("tsconfig.json"), &mut visited, true);
+
+        assert!(files.iter().any(|f| f.ends_with("src/keep.ts")));
+        assert!(files.iter().all(|f| !f.ends_with("src/out/generated.ts")));
     }
 
     #[test]
