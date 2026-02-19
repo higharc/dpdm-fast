@@ -11,6 +11,7 @@ use serde_json::json;
 use spinoff::{spinners, Color, Spinner};
 use std::collections::HashSet;
 use std::fs::File;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use utils::path::join_paths;
@@ -92,6 +93,54 @@ struct Args {
     /// Skip parse import(...) statement
     #[arg(long, short='d')]
     skip_dynamic_imports: Option<String>,
+
+    /// Write deterministic debug dumps to <prefix>.* files
+    #[arg(long)]
+    debug_dump_prefix: Option<String>,
+}
+
+fn dump_debug_graph(
+    prefix: &str,
+    dependency_tree: &parser::types::DependencyTree,
+    circulars: &[Vec<String>],
+) -> Result<(), std::io::Error> {
+    let mut node_ids: Vec<String> = dependency_tree.keys().cloned().collect();
+    node_ids.sort();
+
+    let mut nodes_file = File::create(format!("{}.nodes.txt", prefix))?;
+    for id in node_ids {
+        writeln!(nodes_file, "{}", id)?;
+    }
+
+    let mut edge_lines: Vec<String> = Vec::new();
+    for (issuer, deps) in dependency_tree {
+        if let Some(deps) = deps.as_ref() {
+            for dep in deps {
+                edge_lines.push(format!(
+                    "{}\t{:?}\t{}\t{}",
+                    issuer,
+                    dep.kind,
+                    dep.request,
+                    dep.id.clone().unwrap_or_else(|| "<UNRESOLVED>".to_string())
+                ));
+            }
+        }
+    }
+    edge_lines.sort();
+
+    let mut edges_file = File::create(format!("{}.edges.txt", prefix))?;
+    for line in edge_lines {
+        writeln!(edges_file, "{}", line)?;
+    }
+
+    let mut cycle_lines: Vec<String> = circulars.iter().map(|c| c.join(" -> ")).collect();
+    cycle_lines.sort();
+    let mut cycles_file = File::create(format!("{}.cycles.txt", prefix))?;
+    for line in cycle_lines {
+        writeln!(cycles_file, "{}", line)?;
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
@@ -214,6 +263,17 @@ async fn main() {
         ),
         true => vec![],
     };
+
+    if let Some(prefix) = args.debug_dump_prefix.as_ref() {
+        if let Err(err) = dump_debug_graph(prefix, &dependency_tree, &circulars) {
+            eprintln!("Failed to write debug dump files: {}", err);
+        } else {
+            println!(
+                "Wrote debug dumps: {}.nodes.txt, {}.edges.txt, {}.cycles.txt",
+                prefix, prefix, prefix
+            );
+        }
+    }
 
     let output = args.output.clone();
     if output.is_some() || !args.no_tree {
