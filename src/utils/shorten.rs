@@ -2,6 +2,18 @@ use std::{collections::HashMap, path::Path};
 
 use crate::parser::types::{Dependency, DependencyTree, SymbolTree};
 
+/// Normalize path separators to forward slashes for cross-platform consistency.
+/// Without this, Windows produces `\`-separated keys while Mac/Linux produce
+/// `/`-separated keys, causing different sort orders in parse_circular and
+/// therefore non-deterministic cycle counts across platforms.
+fn normalize_sep(s: String) -> String {
+    if cfg!(windows) {
+        s.replace('\\', "/")
+    } else {
+        s
+    }
+}
+
 pub fn shorten_tree(context: &String, tree: &DependencyTree) -> DependencyTree {
     let mut output: DependencyTree = HashMap::new();
     for (key, dependencies) in tree.iter() {
@@ -9,12 +21,14 @@ pub fn shorten_tree(context: &String, tree: &DependencyTree) -> DependencyTree {
             continue;
         }
 
-        let short_key = Path::new(key)
-            .strip_prefix(&context)
-            .unwrap_or_else(|_| Path::new(key))
-            .to_str()
-            .unwrap()
-            .to_string();
+        let short_key = normalize_sep(
+            Path::new(key)
+                .strip_prefix(&context)
+                .unwrap_or_else(|_| Path::new(key))
+                .to_str()
+                .unwrap()
+                .to_string(),
+        );
         output.insert(
             short_key.clone(),
             <std::option::Option<Vec<Dependency>> as Clone>::clone(&dependencies.as_ref())
@@ -25,12 +39,14 @@ pub fn shorten_tree(context: &String, tree: &DependencyTree) -> DependencyTree {
                             request: item.request.clone(),
                             kind: item.kind.clone(),
                             id: item.id.as_ref().map(|id| {
-                                Path::new(id)
-                                    .strip_prefix(&context)
-                                    .unwrap_or_else(|_| Path::new(id))
-                                    .to_str()
-                                    .unwrap()
-                                    .to_string()
+                                normalize_sep(
+                                    Path::new(id)
+                                        .strip_prefix(&context)
+                                        .unwrap_or_else(|_| Path::new(id))
+                                        .to_str()
+                                        .unwrap()
+                                        .to_string(),
+                                )
                             }),
                         })
                         .collect::<Vec<Dependency>>()
@@ -42,12 +58,14 @@ pub fn shorten_tree(context: &String, tree: &DependencyTree) -> DependencyTree {
 }
 
 pub fn shorten_path(path: &String, context: &String) -> String {
-    Path::new(path)
-        .strip_prefix(&context)
-        .unwrap_or_else(|_| Path::new(path))
-        .to_str()
-        .unwrap()
-        .to_string()
+    normalize_sep(
+        Path::new(path)
+            .strip_prefix(&context)
+            .unwrap_or_else(|_| Path::new(path))
+            .to_str()
+            .unwrap()
+            .to_string(),
+    )
 }
 
 pub fn shorten_symbol_tree(context: &String, tree: &SymbolTree) -> SymbolTree {
@@ -57,12 +75,14 @@ pub fn shorten_symbol_tree(context: &String, tree: &SymbolTree) -> SymbolTree {
             continue;
         }
 
-        let short_key = Path::new(key)
-            .strip_prefix(&context)
-            .unwrap_or_else(|_| Path::new(key))
-            .to_str()
-            .unwrap()
-            .to_string();
+        let short_key = normalize_sep(
+            Path::new(key)
+                .strip_prefix(&context)
+                .unwrap_or_else(|_| Path::new(key))
+                .to_str()
+                .unwrap()
+                .to_string(),
+        );
         output.insert(short_key.clone(), symbol_node.clone());
     }
     output

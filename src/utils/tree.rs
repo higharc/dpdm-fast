@@ -19,6 +19,23 @@ where
 pub fn parse_circular(tree: &mut DependencyTree, skip_dynamic_imports: bool) -> Vec<Vec<String>> {
     let mut circulars: Vec<Vec<String>> = Vec::new();
 
+    fn canonical_cycle_key(cycle: &[String]) -> String {
+        if cycle.is_empty() {
+            return String::new();
+        }
+
+        let mut best = cycle.to_vec();
+        for i in 1..cycle.len() {
+            let mut rotated = cycle[i..].to_vec();
+            rotated.extend_from_slice(&cycle[..i]);
+            if rotated < best {
+                best = rotated;
+            }
+        }
+
+        best.join(" -> ")
+    }
+
     fn visit(
         id: String,
         mut used: Vec<String>,
@@ -32,12 +49,23 @@ pub fn parse_circular(tree: &mut DependencyTree, skip_dynamic_imports: bool) -> 
             used.push(id.clone());
 
             if let Some(deps) = deps.as_ref() {
-                for dep in deps {
-                    if !skip_dynamic_imports || dep.kind != DependencyKind::DynamicImport {
-                        if let Some(id) = dep.id.as_deref() {
-                            visit(id.to_string(), used.clone(), tree, skip_dynamic_imports, circulars);
-                        }
-                    }
+                let mut sorted_deps: Vec<_> = deps
+                    .iter()
+                    .filter(|dep| {
+                        !skip_dynamic_imports || dep.kind != DependencyKind::DynamicImport
+                    })
+                    .filter_map(|dep| dep.id.as_deref())
+                    .collect();
+                sorted_deps.sort();
+
+                for id in sorted_deps {
+                    visit(
+                        id.to_string(),
+                        used.clone(),
+                        tree,
+                        skip_dynamic_imports,
+                        circulars,
+                    );
                 }
             }
         }
@@ -61,7 +89,7 @@ pub fn parse_circular(tree: &mut DependencyTree, skip_dynamic_imports: bool) -> 
     circulars
         .into_iter()
         .filter(|cycle| {
-            let key = cycle.join(" -> ");
+            let key = canonical_cycle_key(cycle);
             seen.insert(key) // Returns false if already present
         })
         .collect()
@@ -110,10 +138,7 @@ pub fn parse_warnings(tree: &DependencyTree) -> Vec<String> {
     if !builtin.is_empty() {
         let mut builtin_sorted: Vec<_> = builtin.into_iter().collect();
         builtin_sorted.sort();
-        warnings.push(format!(
-            "node {}",
-            builtin_sorted.join(", ")
-        ));
+        warnings.push(format!("node {}", builtin_sorted.join(", ")));
     }
 
     warnings.sort();

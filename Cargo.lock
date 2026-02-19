@@ -585,6 +585,7 @@ dependencies = [
  "serde_json",
  "spinoff",
  "swc_core",
+ "tempfile",
  "tokio",
 ]
 

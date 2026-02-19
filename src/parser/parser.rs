@@ -1,10 +1,10 @@
 use super::parse_tree_recursive::parse_tree_recursive;
 use super::types::{Alias, ParseOptions};
 use crate::parser::types::{DependencyTree, SymbolTree};
-use crate::utils::json::strip_jsonc_comments;
 use crate::utils::options::normalize_options;
 use crate::utils::path::join_paths;
 use crate::utils::shorten::{shorten_symbol_tree, shorten_tree};
+use crate::utils::tsconfig_files::load_tsconfig_with_extends;
 use crate::utils::workspace::detect_workspaces;
 use glob::glob;
 use serde_json::Value;
@@ -13,172 +13,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use swc_core::common::{sync::Lrc, SourceMap};
-
-/// Result of loading a tsconfig, including its directory for baseUrl resolution
-struct TsConfigResult {
-    config: Value,
-    /// The directory containing the tsconfig file (used for baseUrl resolution)
-    config_dir: PathBuf,
-}
-
-/// Load a tsconfig.json file and resolve its `extends` chain.
-/// Returns the merged configuration with all inherited settings.
-fn load_tsconfig_with_extends(
-    tsconfig_path: &PathBuf,
-    current_directory: &PathBuf,
-    visited: &mut HashSet<PathBuf>,
-) -> Option<TsConfigResult> {
-    // Resolve the tsconfig path to an absolute path
-    let canonical_path = fs::canonicalize(tsconfig_path).ok()?;
-
-    // Detect circular extends
-    if visited.contains(&canonical_path) {
-        eprintln!(
-            "Circular extends detected in tsconfig: {}",
-            canonical_path.display()
-        );
-        return None;
-    }
-    visited.insert(canonical_path.clone());
-
-    // Get the directory containing this tsconfig
-    let config_dir = canonical_path
-        .parent()
-        .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| current_directory.clone());
-
-    // Read and parse the tsconfig file
-    let content = match fs::read_to_string(&canonical_path) {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!(
-                "Failed to read tsconfig {}: {:?}",
-                canonical_path.display(),
-                e
-            );
-            return None;
-        }
-    };
-
-    let cleaned_content = strip_jsonc_comments(&content, true);
-    let mut config: Value = match serde_json::from_str(&cleaned_content) {
-        Ok(json) => json,
-        Err(e) => {
-            eprintln!(
-                "Failed to parse tsconfig {}: {:?}",
-                canonical_path.display(),
-                e
-            );
-            return None;
-        }
-    };
-
-    // Check for extends and process parent config
-    if let Some(extends) = config.get("extends").and_then(|e| e.as_str()) {
-        let parent_path = resolve_extends_path(extends, &config_dir);
-
-        if let Some(parent_result) =
-            load_tsconfig_with_extends(&parent_path, current_directory, visited)
-        {
-            // Merge parent into child (child overrides parent)
-            config = merge_tsconfig(parent_result.config, config);
-        }
-    }
-
-    // Remove the extends field from the result (it's been processed)
-    if let Some(obj) = config.as_object_mut() {
-        obj.remove("extends");
-    }
-
-    Some(TsConfigResult { config, config_dir })
-}
-
-/// Resolve the path in an `extends` field to an absolute path.
-/// Handles both relative paths (./base.json) and package references (@tsconfig/node16).
-fn resolve_extends_path(extends: &str, config_dir: &PathBuf) -> PathBuf {
-    if extends.starts_with('.') {
-        // Relative path
-        join_paths(&[config_dir, &PathBuf::from(extends)])
-    } else if extends.starts_with('/') {
-        // Absolute path (rare but possible)
-        PathBuf::from(extends)
-    } else {
-        // Package reference (e.g., "@tsconfig/node16")
-        // Try to resolve from node_modules
-        let mut search_dir = config_dir.clone();
-        loop {
-            let candidate = search_dir.join("node_modules").join(extends);
-            // Try with .json extension if not present
-            let candidate_with_json = if extends.ends_with(".json") {
-                candidate.clone()
-            } else {
-                // Try tsconfig.json inside the package
-                let package_tsconfig = candidate.join("tsconfig.json");
-                if package_tsconfig.exists() {
-                    return package_tsconfig;
-                }
-                // Try with .json extension
-                PathBuf::from(format!("{}.json", candidate.display()))
-            };
-
-            if candidate_with_json.exists() {
-                return candidate_with_json;
-            }
-
-            if candidate.exists() {
-                return candidate;
-            }
-
-            // Move up one directory
-            match search_dir.parent() {
-                Some(parent) => search_dir = parent.to_path_buf(),
-                None => break,
-            }
-        }
-
-        // Fallback: return the path as-is relative to config_dir
-        join_paths(&[config_dir, &PathBuf::from(extends)])
-    }
-}
-
-/// Merge two tsconfig objects. Child values override parent values.
-/// For compilerOptions, we do a shallow merge (child fields override parent fields).
-fn merge_tsconfig(parent: Value, child: Value) -> Value {
-    match (parent, child) {
-        (Value::Object(mut parent_obj), Value::Object(child_obj)) => {
-            for (key, child_value) in child_obj {
-                if key == "compilerOptions" {
-                    // Special handling for compilerOptions - shallow merge
-                    if let Some(parent_co) = parent_obj.get("compilerOptions") {
-                        let merged_co = merge_compiler_options(parent_co.clone(), child_value);
-                        parent_obj.insert(key, merged_co);
-                    } else {
-                        parent_obj.insert(key, child_value);
-                    }
-                } else {
-                    // For other fields, child completely overrides parent
-                    parent_obj.insert(key, child_value);
-                }
-            }
-            Value::Object(parent_obj)
-        }
-        (_, child) => child, // If parent isn't an object, just use child
-    }
-}
-
-/// Merge compilerOptions objects. Child fields override parent fields.
-/// This is a shallow merge - if child has "paths", it completely replaces parent's "paths".
-fn merge_compiler_options(parent: Value, child: Value) -> Value {
-    match (parent, child) {
-        (Value::Object(mut parent_obj), Value::Object(child_obj)) => {
-            for (key, child_value) in child_obj {
-                parent_obj.insert(key, child_value);
-            }
-            Value::Object(parent_obj)
-        }
-        (_, child) => child,
-    }
-}
 
 /// Calculate the specificity of a path pattern for sorting.
 /// More specific patterns (longer, fewer wildcards) should be tried first.
@@ -247,7 +81,7 @@ pub async fn parse_dependency_tree(
             let tsconfig_path = PathBuf::from(tsconfig);
             let mut visited = HashSet::new();
 
-            match load_tsconfig_with_extends(&tsconfig_path, &current_directory, &mut visited) {
+            match load_tsconfig_with_extends(&tsconfig_path, &mut visited) {
                 Some(result) => (result.config, result.config_dir),
                 None => {
                     eprintln!("Failed to load tsconfig: {}", tsconfig_path.display());
@@ -385,69 +219,5 @@ mod tests {
 
         let alias = extract_alias_from_tsconfig(&tsconfig, PathBuf::from("/root"));
         assert!(alias.is_none(), "should return None when paths is missing");
-    }
-
-    #[test]
-    fn test_merge_tsconfig_child_overrides_parent() {
-        let parent = json!({
-            "compilerOptions": {
-                "strict": true,
-                "baseUrl": ".",
-                "paths": {
-                    "@/*": ["./src/*"]
-                }
-            }
-        });
-
-        let child = json!({
-            "compilerOptions": {
-                "strict": false,
-                "paths": {
-                    "@/*": ["./lib/*"]
-                }
-            }
-        });
-
-        let merged = merge_tsconfig(parent, child);
-
-        // Child should override parent values
-        assert_eq!(
-            merged["compilerOptions"]["strict"],
-            json!(false),
-            "child strict should override parent"
-        );
-
-        // Child paths should completely replace parent paths
-        assert_eq!(
-            merged["compilerOptions"]["paths"]["@/*"],
-            json!(["./lib/*"]),
-            "child paths should override parent paths"
-        );
-
-        // Parent-only values should be preserved
-        assert_eq!(
-            merged["compilerOptions"]["baseUrl"],
-            json!("."),
-            "parent baseUrl should be preserved"
-        );
-    }
-
-    #[test]
-    fn test_merge_compiler_options() {
-        let parent = json!({
-            "strict": true,
-            "target": "es5"
-        });
-
-        let child = json!({
-            "strict": false,
-            "module": "commonjs"
-        });
-
-        let merged = merge_compiler_options(parent, child);
-
-        assert_eq!(merged["strict"], json!(false));
-        assert_eq!(merged["target"], json!("es5"));
-        assert_eq!(merged["module"], json!("commonjs"));
     }
 }

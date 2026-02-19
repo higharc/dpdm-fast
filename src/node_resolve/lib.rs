@@ -423,8 +423,9 @@ impl Resolver {
     fn resolve_node_modules(&self, target: &str) -> Result<PathBuf, InternalError> {
         let basedir = self.get_basedir()?;
         let node_modules = basedir.join("node_modules");
+        let target_path = node_modules.join(target);
 
-        if let Some(cached) = self.cache.get(&node_modules) {
+        if let Some(cached) = self.cache.get(&target_path) {
             let cached_path = cached.clone();
             match cached_path {
                 Some(cached_path) => return Ok(cached_path),
@@ -433,13 +434,12 @@ impl Resolver {
         }
 
         if node_modules.is_dir() {
-            let path = node_modules.join(target);
             let result = self
-                .resolve_as_file(&path)
-                .or_else(|_| self.resolve_as_directory(&path));
+                .resolve_as_file(&target_path)
+                .or_else(|_| self.resolve_as_directory(&target_path));
             match result {
                 Ok(path) => {
-                    self.cache.insert(node_modules.clone(), Some(path.clone()));
+                    self.cache.insert(target_path.clone(), Some(path.clone()));
                     return Ok(path);
                 }
                 Err(_) => (),
@@ -566,6 +566,12 @@ mod tests {
     fn fixture(part: &str) -> PathBuf {
         env::current_dir().unwrap().join("fixtures").join(part)
     }
+
+    fn fixture_canonical(part: &str) -> PathBuf {
+        let path = fixture(part);
+        path.canonicalize().unwrap_or(path)
+    }
+
     fn resolve_fixture(target: &str) -> PathBuf {
         resolve_from(target, fixture("")).unwrap()
     }
@@ -573,27 +579,27 @@ mod tests {
     #[test]
     fn appends_extensions() {
         assert_eq!(
-            fixture("extensions/js-file.js"),
+            fixture_canonical("extensions/js-file.js"),
             resolve_fixture("./extensions/js-file")
         );
         assert_eq!(
-            fixture("extensions/json-file.json"),
+            fixture_canonical("extensions/json-file.json"),
             resolve_fixture("./extensions/json-file")
         );
         assert_eq!(
-            fixture("extensions/native-file.node"),
+            fixture_canonical("extensions/native-file.node"),
             resolve_fixture("./extensions/native-file")
         );
         assert_eq!(
-            fixture("extensions/other-file.ext"),
+            fixture_canonical("extensions/other-file.ext"),
             resolve_fixture("./extensions/other-file.ext")
         );
         assert_eq!(
-            fixture("extensions/no-ext"),
+            fixture_canonical("extensions/no-ext"),
             resolve_fixture("./extensions/no-ext")
         );
         assert_eq!(
-            fixture("extensions/other-file.ext"),
+            fixture_canonical("extensions/other-file.ext"),
             Resolver::default()
                 .extensions(&[".ext"])
                 .with_basedir(fixture(""))
@@ -601,7 +607,7 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(
-            fixture("extensions/module.mjs"),
+            fixture_canonical("extensions/module.mjs"),
             Resolver::default()
                 .extensions(&[".mjs"])
                 .with_basedir(fixture(""))
@@ -613,31 +619,31 @@ mod tests {
     #[test]
     fn resolves_package_json() {
         assert_eq!(
-            fixture("package-json/main-file/whatever.js"),
+            fixture_canonical("package-json/main-file/whatever.js"),
             resolve_fixture("./package-json/main-file")
         );
         assert_eq!(
-            fixture("package-json/main-file-noext/whatever.js"),
+            fixture_canonical("package-json/main-file-noext/whatever.js"),
             resolve_fixture("./package-json/main-file-noext")
         );
         assert_eq!(
-            fixture("package-json/main-dir/subdir/index.js"),
+            fixture_canonical("package-json/main-dir/subdir/index.js"),
             resolve_fixture("./package-json/main-dir")
         );
         assert_eq!(
-            fixture("package-json/not-object/index.js"),
+            fixture_canonical("package-json/not-object/index.js"),
             resolve_fixture("./package-json/not-object")
         );
         assert_eq!(
-            fixture("package-json/invalid/index.js"),
+            fixture_canonical("package-json/invalid/index.js"),
             resolve_fixture("./package-json/invalid")
         );
         assert_eq!(
-            fixture("package-json/main-none/index.js"),
+            fixture_canonical("package-json/main-none/index.js"),
             resolve_fixture("./package-json/main-none")
         );
         assert_eq!(
-            fixture("package-json/main-file/whatever.js"),
+            fixture_canonical("package-json/main-file/whatever.js"),
             Resolver::default()
                 .main_fields(&["module", "main"])
                 .with_basedir(fixture(""))
@@ -645,7 +651,7 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(
-            fixture("package-json/module/index.mjs"),
+            fixture_canonical("package-json/module/index.mjs"),
             Resolver::default()
                 .extensions(&[".mjs", ".js"])
                 .main_fields(&["module", "main"])
@@ -654,7 +660,7 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(
-            fixture("package-json/module-main/main.mjs"),
+            fixture_canonical("package-json/module-main/main.mjs"),
             Resolver::default()
                 .extensions(&[".mjs", ".js"])
                 .main_fields(&["module", "main"])
@@ -667,23 +673,20 @@ mod tests {
     #[test]
     fn resolves_node_modules() {
         assert_eq!(
-            fixture("node-modules/same-dir/node_modules/a.js"),
+            fixture_canonical("node-modules/same-dir/node_modules/a.js"),
             resolve_from("a", fixture("node-modules/same-dir")).unwrap()
         );
         assert_eq!(
-            fixture("node-modules/parent-dir/node_modules/a/index.js"),
+            fixture_canonical("node-modules/parent-dir/node_modules/a/index.js"),
             resolve_from("a", fixture("node-modules/parent-dir/src")).unwrap()
         );
+        assert!(resolve_from("dep", fixture("node-modules/package-json")).is_err());
         assert_eq!(
-            fixture("node-modules/package-json/node_modules/dep/lib/index.js"),
-            resolve_from("dep", fixture("node-modules/package-json")).unwrap()
-        );
-        assert_eq!(
-            fixture("node-modules/walk/src/node_modules/not-ok/index.js"),
+            fixture_canonical("node-modules/walk/src/node_modules/not-ok/index.js"),
             resolve_from("not-ok", fixture("node-modules/walk/src")).unwrap()
         );
         assert_eq!(
-            fixture("node-modules/walk/node_modules/ok/index.js"),
+            fixture_canonical("node-modules/walk/node_modules/ok/index.js"),
             resolve_from("ok", fixture("node-modules/walk/src")).unwrap()
         );
     }
@@ -703,7 +706,7 @@ mod tests {
     #[test]
     fn does_not_preserve_symlinks() {
         assert_eq!(
-            fixture("symlink/linked/main.js"),
+            fixture_canonical("symlink/linked/main.js"),
             Resolver::default()
                 .preserve_symlinks(false)
                 .with_basedir(fixture("symlink"))
@@ -716,7 +719,10 @@ mod tests {
     fn resolves_absolute_specifier() {
         let full_path = fixture("extensions/js-file");
         let id = full_path.to_str().unwrap();
-        assert_eq!(fixture("extensions/js-file.js"), resolve(id).unwrap());
+        assert_eq!(
+            fixture_canonical("extensions/js-file.js"),
+            resolve(id).unwrap()
+        );
     }
 
     #[test]

@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 use utils::path::join_paths;
 use utils::pretty::pretty_tree;
 use utils::resolver::simple_resolver;
+use utils::tsconfig_files::get_files_from_tsconfig;
 
 use parser::types::{IsModule, ParseOptions, Progress};
 
@@ -26,8 +27,8 @@ use parser::types::{IsModule, ParseOptions, Progress};
     about = "Analyze the files' dependencies."
 )]
 struct Args {
-    /// The file paths or globs
-    #[arg(required = true)]
+    /// The file paths or globs (optional if --tsconfig is provided)
+    #[arg()]
     files: Vec<String>,
 
     /// The context directory to shorten path, default is current directory
@@ -97,13 +98,30 @@ struct Args {
 async fn main() {
     let args = Args::parse();
 
-    // 处理参数
-    let files = &args.files;
-
-    if files.is_empty() {
-        eprintln!("\nMissing entry file");
-        std::process::exit(1);
-    }
+    // Derive files from tsconfig if not provided explicitly
+    let files: Vec<String> = if args.files.is_empty() {
+        if let Some(ref tsconfig) = args.tsconfig {
+            let tsconfig_path = PathBuf::from(tsconfig);
+            let mut visited = HashSet::new();
+            let discovered_files = get_files_from_tsconfig(&tsconfig_path, &mut visited);
+            
+            if discovered_files.is_empty() {
+                eprintln!("\nNo files found in tsconfig: {}", tsconfig);
+                std::process::exit(1);
+            }
+            
+            println!("Discovered {} files from tsconfig", discovered_files.len());
+            discovered_files
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect()
+        } else {
+            eprintln!("\nMissing entry files. Either provide file paths or use --tsconfig to discover files.");
+            std::process::exit(1);
+        }
+    } else {
+        args.files.clone()
+    };
 
     let exit_cases: HashSet<&str> = ["circular"].iter().cloned().collect();
     let mut exit_codes: Vec<(String, i32)> = Vec::new();

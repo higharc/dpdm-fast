@@ -7,3 +7,4 @@ pub mod alias;
 pub mod pretty;
 pub mod json;
 pub mod workspace;
+pub mod tsconfig_files;
